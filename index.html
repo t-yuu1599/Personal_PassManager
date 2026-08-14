@@ -4,10 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#0f766e">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://accounts.google.com/gsi/client; connect-src 'self' https://accounts.google.com/gsi/ https://login.microsoftonline.com https://graph.microsoft.com; frame-src https://accounts.google.com/gsi/ https://login.microsoftonline.com; img-src 'self' data: https://lh3.googleusercontent.com; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; form-action 'none'">
   <meta name="description" content="ローカル優先の軽量パスワード管理PWA">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="styles.css?v=2">
+  <link rel="stylesheet" href="styles.css?v=3">
   <title>鍵帳</title>
 </head>
 <body>
@@ -101,7 +104,8 @@
       <div class="setting-row"><div><strong>自動ロック</strong><small>無操作時にメモリ上の鍵を破棄</small></div><select id="lockTimeout"><option value="5">5分</option><option value="15">15分</option><option value="30">30分</option><option value="60">60分</option><option value="0">無効</option></select></div>
       <div class="setting-row"><div><strong>暗号化バックアップ</strong><small>端末へ .enc ファイルを保存</small></div><button id="exportButton" class="secondary">書き出す</button></div>
       <div class="setting-row"><div><strong>バックアップを復元</strong><small>この端末の内容と置き換え</small></div><button id="importButton" class="secondary">読み込む</button><input id="importFile" type="file" accept=".enc,application/octet-stream" hidden></div>
-      <div class="setting-row"><div><strong>OneDrive</strong><small>接続設定後に利用できます</small></div><span class="status status-offline">未接続</span></div>
+      <div class="setting-row"><div><strong>Googleアカウント</strong><small id="googleAccountText">OAuth設定後に利用できます</small></div><button id="googleConnectButton" class="secondary">接続</button></div>
+      <div class="setting-row"><div><strong>OneDrive</strong><small id="oneDriveAccountText">OAuth設定後に利用できます</small></div><button id="oneDriveConnectButton" class="secondary">接続</button></div>
       <button id="lockButton" class="danger full-button">今すぐロック</button>
     </section>
   </dialog>
@@ -114,7 +118,16 @@
     </section>
   </dialog>
 
+  <dialog id="authDialog" class="lock-dialog">
+    <section class="lock-card">
+      <div class="lock-mark">G</div><p class="eyebrow">IDENTITY CHECK</p><h2>Googleで本人確認</h2>
+      <p>Vaultを開く前に、登録したGoogleアカウントを確認します。</p>
+      <div id="googleSignInButton" class="google-button"></div>
+      <p id="authError" class="error-text"></p>
+    </section>
+  </dialog>
+
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script src="app.js?v=2" type="module"></script>
+  <script src="app.js?v=3" type="module"></script>
 </body>
 </html>

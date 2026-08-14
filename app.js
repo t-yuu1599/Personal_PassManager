@@ -1,3 +1,5 @@
+import { authenticateGoogle, googleConfigured, microsoftConfigured, getMicrosoftAccessToken, clearMicrosoftAccessToken } from './auth.js';
+
 const DB_NAME = 'kagicho-vault';
 const DB_VERSION = 1;
 const STORE = 'secure';
@@ -20,7 +22,7 @@ const SERVICE_RULES = [
 ];
 
 const $ = id => document.getElementById(id);
-const ui = Object.fromEntries(['searchInput','clearSearch','categoryChips','resultTitle','resultCount','credentialList','emptyState','emptyTitle','emptyMessage','addButton','editorDialog','editorForm','editorTitle','recordId','serviceName','userId','password','generatePassword','url','category','tags','reading','memo','advancedFields','deleteButton','settingsButton','settingsDialog','closeSettings','lockTimeout','exportButton','importButton','importFile','lockButton','lockDialog','unlockButton','toast','syncButton','syncStatus','categoryOptions'].map(id => [id,$(id)]));
+const ui = Object.fromEntries(['searchInput','clearSearch','categoryChips','resultTitle','resultCount','credentialList','emptyState','emptyTitle','emptyMessage','addButton','editorDialog','editorForm','editorTitle','recordId','serviceName','userId','password','generatePassword','url','category','tags','reading','memo','advancedFields','deleteButton','settingsButton','settingsDialog','closeSettings','lockTimeout','exportButton','importButton','importFile','lockButton','lockDialog','unlockButton','toast','syncButton','syncStatus','categoryOptions','googleAccountText','googleConnectButton','oneDriveAccountText','oneDriveConnectButton','authDialog','googleSignInButton','authError'].map(id => [id,$(id)]));
 
 let db;
 let vaultKey = null;
@@ -29,8 +31,11 @@ let selectedCategory = '';
 let lockTimer;
 let revealTimers = new Map();
 let saveQueue = Promise.resolve();
+let currentGoogleUser = null;
+let syncInProgress = false;
+let syncProblem = '';
 
-function freshState(){return {formatVersion:1,revision:0,updatedAt:new Date(0).toISOString(),deviceId:crypto.randomUUID(),records:[],categories:[...DEFAULT_CATEGORIES],settings:{lockMinutes:15},dirty:false};}
+function freshState(){return {formatVersion:1,revision:0,updatedAt:new Date(0).toISOString(),deviceId:crypto.randomUUID(),records:[],categories:[...DEFAULT_CATEGORIES],settings:{lockMinutes:15,google:null,microsoft:null},dirty:false};}
 function bytesToBase64(bytes){let s=''; for(let i=0;i<bytes.length;i+=0x8000)s+=String.fromCharCode(...bytes.subarray(i,i+0x8000)); return btoa(s);}
 function base64ToBytes(value){const s=atob(value), out=new Uint8Array(s.length); for(let i=0;i<s.length;i++)out[i]=s.charCodeAt(i); return out;}
 function request(req){return new Promise((resolve,reject)=>{req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);});}
@@ -67,7 +72,8 @@ async function decryptState(blob){
 async function loadState(){
   const encrypted=await dbGet('vault');
   if(!encrypted){state=freshState();await persistState(false);return;}
-  state={...freshState(),...(await decryptState(encrypted))};
+  const defaults=freshState(),loaded=await decryptState(encrypted);
+  state={...defaults,...loaded,settings:{...defaults.settings,...loaded.settings}};
   state.categories=[...new Set([...DEFAULT_CATEGORIES,...(state.categories||[])])];
 }
 async function persistState(markDirty=true){
@@ -75,6 +81,11 @@ async function persistState(markDirty=true){
   const snapshot=JSON.parse(JSON.stringify(state));
   saveQueue=saveQueue.then(async()=>dbPut('vault',await encryptState(snapshot))).catch(error=>{console.error('Vault save failed',error);showToast('保存に失敗しました');});
   await saveQueue;updateSyncStatus();
+}
+async function storeStateWithoutRevision(){
+  const snapshot=JSON.parse(JSON.stringify(state));
+  saveQueue=saveQueue.then(async()=>dbPut('vault',await encryptState(snapshot)));
+  await saveQueue;
 }
 
 function normalize(value=''){
@@ -105,7 +116,15 @@ function render(){
   const query=ui.searchInput.value.trim();ui.resultTitle.textContent=selectedCategory|| (query?`「${query}」の結果`:'すべて');ui.resultCount.textContent=`${records.length}件`;
   ui.emptyState.hidden=records.length!==0;ui.emptyTitle.textContent=state.records.length?(query||selectedCategory?'見つかりませんでした':'表示できる項目がありません'):'まだ登録がありません';
   ui.emptyMessage.textContent=state.records.length?'検索語やカテゴリを変えてみてください。':'右下の＋から、最初のログイン情報を登録できます。';
-  ui.clearSearch.hidden=!query;updateCategoryOptions();updateSyncStatus();
+  ui.clearSearch.hidden=!query;updateCategoryOptions();updateAccountUI();updateSyncStatus();
+}
+function updateAccountUI(){
+  if(!googleConfigured()){ui.googleAccountText.textContent='Google Client IDが未設定';ui.googleConnectButton.disabled=true;}
+  else if(currentGoogleUser||state.settings.google){ui.googleAccountText.textContent=(currentGoogleUser||state.settings.google).email||'接続済み';ui.googleConnectButton.textContent='再確認';ui.googleConnectButton.disabled=false;}
+  else{ui.googleAccountText.textContent='未接続';ui.googleConnectButton.textContent='接続';ui.googleConnectButton.disabled=false;}
+  if(!microsoftConfigured()){ui.oneDriveAccountText.textContent='Microsoft Client IDが未設定';ui.oneDriveConnectButton.disabled=true;}
+  else if(state.settings.microsoft){ui.oneDriveAccountText.textContent=state.settings.microsoft.account||'接続済み';ui.oneDriveConnectButton.textContent='再接続';ui.oneDriveConnectButton.disabled=false;}
+  else{ui.oneDriveAccountText.textContent='未接続';ui.oneDriveConnectButton.textContent='接続';ui.oneDriveConnectButton.disabled=false;}
 }
 function renderCategories(){
   const used=[...new Set(state.records.map(x=>x.category).filter(Boolean))];ui.categoryChips.replaceChildren();
@@ -153,13 +172,18 @@ function generatePassword(){
   const alphabet='ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%&*+-_';const values=crypto.getRandomValues(new Uint32Array(20));ui.password.value=Array.from(values,x=>alphabet[x%alphabet.length]).join('');ui.password.type='text';setTimeout(()=>ui.password.type='password',2500);showToast('パスワードを生成しました');
 }
 function updateCategoryOptions(){ui.categoryOptions.innerHTML=state.categories.map(x=>`<option value="${escapeHtml(x)}">`).join('');}
-function updateSyncStatus(){ui.syncStatus.className=`status ${state.dirty?'status-offline':'status-local'}`;ui.syncStatus.textContent=state.dirty?'● 未同期':'✓ ローカル保存済み';}
+function updateSyncStatus(){
+  if(syncInProgress){ui.syncStatus.className='status status-local';ui.syncStatus.textContent='↻ 同期中';return;}
+  if(syncProblem){ui.syncStatus.className='status status-offline';ui.syncStatus.textContent='! '+syncProblem;return;}
+  if(state.settings.microsoft){ui.syncStatus.className=`status ${state.dirty?'status-offline':'status-local'}`;ui.syncStatus.textContent=state.dirty?'● 未同期':'✓ 同期済み';return;}
+  ui.syncStatus.className=`status ${state.dirty?'status-offline':'status-local'}`;ui.syncStatus.textContent=state.dirty?'● ローカル変更あり':'✓ ローカル保存済み';
+}
 function showToast(message){ui.toast.textContent=message;ui.toast.classList.add('show');clearTimeout(showToast.timer);showToast.timer=setTimeout(()=>ui.toast.classList.remove('show'),1800);}
 
 function resetLockTimer(){
   clearTimeout(lockTimer);if(!vaultKey)return;const minutes=Number(state.settings.lockMinutes);if(minutes>0)lockTimer=setTimeout(lockVault,minutes*60*1000);
 }
-function lockVault(){vaultKey=null;clearTimeout(lockTimer);ui.settingsDialog.close();if(!ui.lockDialog.open)ui.lockDialog.showModal();}
+function lockVault(){vaultKey=null;clearMicrosoftAccessToken();state=freshState();clearTimeout(lockTimer);ui.settingsDialog.close();render();if(!ui.lockDialog.open)ui.lockDialog.showModal();}
 async function unlockVault(){
   ui.unlockButton.disabled=true;try{await initializeKeys();await loadState();ui.lockDialog.close();render();resetLockTimer();showToast('ロックを解除しました');}catch(error){console.error('Unlock failed',error);showToast('ロック解除に失敗しました');}finally{ui.unlockButton.disabled=false;}
 }
@@ -174,6 +198,78 @@ async function importBackup(file){
   }catch(error){console.error('Import failed',error);showToast('この端末で作成したバックアップではありません');}
 }
 
+async function graphRequest(path,token,options={}){
+  const response=await fetch(`https://graph.microsoft.com/v1.0${path}`,{...options,headers:{Authorization:`Bearer ${token}`,...options.headers}});
+  if(response.status===404)return null;
+  if(!response.ok){let detail='';try{detail=(await response.json()).error?.message||'';}catch{}throw new Error(detail||`Microsoft Graph error ${response.status}`);}
+  return response;
+}
+async function getOneDriveSession(interactive=false){
+  if(!microsoftConfigured())throw new Error('Microsoft Client IDが未設定です');
+  const refreshToken=state.settings.microsoft?.refreshToken||'';
+  if(!interactive&&!refreshToken)throw new Error('OneDriveは未接続です');
+  const session=await getMicrosoftAccessToken(refreshToken);
+  if(!state.settings.microsoft||session.refreshToken!==refreshToken){
+    state.settings.microsoft={account:'OneDrive App Folder',refreshToken:session.refreshToken,connectedAt:new Date().toISOString()};
+    await persistState(true);
+  }
+  return session;
+}
+async function readCloudVault(token){
+  const response=await graphRequest('/me/drive/special/approot:/vault.enc:/content',token);
+  if(!response)return null;
+  const remote=await response.json();
+  if(remote.formatVersion!==1||!remote.encryptedPayload)throw new Error('クラウドVaultの形式が不明です');
+  return remote;
+}
+async function applyCloudVault(remote){
+  const localMicrosoft=state.settings.microsoft;
+  const restored=await decryptState(remote.encryptedPayload);
+  const defaults=freshState();
+  state={...defaults,...restored,revision:Number(remote.revision)||restored.revision||0,updatedAt:remote.updatedAt||restored.updatedAt,dirty:false,settings:{...defaults.settings,...restored.settings,microsoft:localMicrosoft||restored.settings?.microsoft||null}};
+  state.categories=[...new Set([...DEFAULT_CATEGORIES,...(state.categories||[])])];
+  await storeStateWithoutRevision();render();
+}
+async function uploadCloudVault(token){
+  const syncSnapshot=JSON.parse(JSON.stringify({...state,dirty:false}));
+  const payload={formatVersion:1,revision:syncSnapshot.revision,updatedAt:syncSnapshot.updatedAt,deviceId:syncSnapshot.deviceId,encryptedPayload:await encryptState(syncSnapshot)};
+  await graphRequest('/me/drive/special/approot:/vault.enc:/content',token,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  const wrapped=await dbGet('wrappedVaultKey');
+  await graphRequest('/me/drive/special/approot:/wrapped-key.bin:/content',token,{method:'PUT',headers:{'Content-Type':'application/octet-stream'},body:wrapped});
+  state.dirty=false;await storeStateWithoutRevision();
+}
+async function syncOneDrive({interactive=false}={}){
+  if(syncInProgress)return;
+  if(!navigator.onLine){syncProblem='オフライン';updateSyncStatus();if(interactive)showToast('オフラインでは同期できません');return;}
+  syncInProgress=true;syncProblem='';updateSyncStatus();
+  try{
+    const session=await getOneDriveSession(interactive);
+    const remote=await readCloudVault(session.accessToken);
+    if(remote&&Number(remote.revision)>Number(state.revision)){
+      if(state.dirty){
+        const useCloud=confirm('別の端末に新しい変更があります。\n\nOK: クラウド版を使用\nキャンセル: この端末版を使用');
+        if(useCloud)await applyCloudVault(remote);else{state.revision=Number(remote.revision)+1;await uploadCloudVault(session.accessToken);}
+      }else await applyCloudVault(remote);
+    }else if(!remote||state.dirty||Number(remote.revision)<Number(state.revision))await uploadCloudVault(session.accessToken);
+    else{state.dirty=false;await storeStateWithoutRevision();}
+    syncProblem='';showToast('OneDriveと同期しました');
+  }catch(error){
+    console.error('OneDrive sync failed',error);syncProblem=state.settings.microsoft?'再接続が必要':'未接続';
+    if(interactive)showToast(error.message||'OneDrive同期に失敗しました');
+  }finally{syncInProgress=false;updateAccountUI();updateSyncStatus();}
+}
+async function connectGoogleAccount(){
+  if(!googleConfigured()){showToast('Google Client IDが未設定です');return;}
+  try{currentGoogleUser=await authenticateGoogle(null,{prompt:true});state.settings.google={sub:currentGoogleUser.sub,email:currentGoogleUser.email,name:currentGoogleUser.name};await persistState(true);updateAccountUI();showToast('Googleアカウントを確認しました');}
+  catch(error){console.error('Google authentication failed',error);showToast('Google認証に失敗しました');}
+}
+async function requireGoogleIdentity(){
+  if(!googleConfigured())return;
+  ui.authDialog.showModal();ui.authError.textContent='';
+  try{currentGoogleUser=await authenticateGoogle(ui.googleSignInButton,{prompt:true});ui.authDialog.close();}
+  catch(error){console.error('Google authentication failed',error);ui.authError.textContent='Google認証を完了できませんでした。';throw error;}
+}
+
 function bindEvents(){
   ui.searchInput.addEventListener('input',render);ui.clearSearch.onclick=()=>{ui.searchInput.value='';ui.searchInput.focus();render();};ui.addButton.onclick=()=>openEditor();
   ui.editorForm.addEventListener('submit',event=>{event.preventDefault();if(event.submitter?.value==='cancel'){ui.editorDialog.close();return;}if(!ui.editorForm.reportValidity())return;saveEditor();});
@@ -182,12 +278,21 @@ function bindEvents(){
   ui.serviceName.addEventListener('blur',()=>{const guess=infer(ui.serviceName.value,ui.url.value);if(!ui.category.value)ui.category.value=guess.category;if(!ui.reading.value)ui.reading.value=guess.reading;if(!ui.tags.value)ui.tags.value=guess.tags.join(', ');});
   ui.settingsButton.onclick=()=>ui.settingsDialog.showModal();ui.closeSettings.onclick=()=>ui.settingsDialog.close();ui.lockTimeout.onchange=async()=>{state.settings.lockMinutes=Number(ui.lockTimeout.value);await persistState();resetLockTimer();};
   ui.lockButton.onclick=lockVault;ui.unlockButton.onclick=unlockVault;ui.exportButton.onclick=exportBackup;ui.importButton.onclick=()=>ui.importFile.click();ui.importFile.onchange=()=>ui.importFile.files[0]&&importBackup(ui.importFile.files[0]);
-  ui.syncButton.onclick=()=>showToast('OneDriveは未接続です');
+  ui.googleConnectButton.onclick=connectGoogleAccount;ui.oneDriveConnectButton.onclick=()=>syncOneDrive({interactive:true});ui.syncButton.onclick=()=>syncOneDrive({interactive:true});
   for(const event of ['pointerdown','keydown','touchstart'])document.addEventListener(event,resetLockTimer,{passive:true});
   document.addEventListener('visibilitychange',()=>{if(!document.hidden)resetLockTimer();});
+  window.addEventListener('online',()=>{syncProblem='';if(state.dirty&&state.settings.microsoft)syncOneDrive();});
+  window.addEventListener('offline',()=>{syncProblem='オフライン';updateSyncStatus();});
 }
 
 async function start(){
-  bindEvents();try{await openDatabase();await initializeKeys();await loadState();ui.lockTimeout.value=String(state.settings.lockMinutes??15);render();resetLockTimer();if('serviceWorker'in navigator)navigator.serviceWorker.register('./sw.js').catch(()=>{});}catch(error){console.error('Startup failed',error);ui.emptyState.hidden=false;ui.emptyTitle.textContent='起動できませんでした';ui.emptyMessage.textContent='このブラウザでIndexedDBとWeb Cryptoを利用できるか確認してください。';}
+  bindEvents();try{
+    await openDatabase();await requireGoogleIdentity();await initializeKeys();await loadState();
+    if(currentGoogleUser&&state.settings.google&&state.settings.google.sub!==currentGoogleUser.sub)throw new Error('登録済みとは異なるGoogleアカウントです');
+    if(currentGoogleUser&&!state.settings.google){state.settings.google={sub:currentGoogleUser.sub,email:currentGoogleUser.email,name:currentGoogleUser.name};await persistState(true);}
+    ui.lockTimeout.value=String(state.settings.lockMinutes??15);render();resetLockTimer();
+    if('serviceWorker'in navigator)navigator.serviceWorker.register('./sw.js').catch(()=>{});
+    if(state.settings.microsoft&&navigator.onLine)setTimeout(()=>syncOneDrive(),500);
+  }catch(error){console.error('Startup failed',error);ui.emptyState.hidden=false;ui.emptyTitle.textContent='起動できませんでした';ui.emptyMessage.textContent=error.message||'このブラウザでIndexedDBとWeb Cryptoを利用できるか確認してください。';}
 }
 start();
