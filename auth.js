@@ -1,4 +1,4 @@
-import { APP_CONFIG, microsoftRedirectUri } from './config.js?v=4';
+import { APP_CONFIG, microsoftRedirectUri } from './config.js?v=5';
 
 let googleLibraryPromise;
 let googleInitialized = false;

@@ -57,9 +57,10 @@ https://applegrimm.github.io
 
 ```text
 http://localhost:4173/auth/microsoft-redirect.html
-http://127.0.0.1:4173/auth/microsoft-redirect.html
 https://applegrimm.github.io/Personal_PassManager/auth/microsoft-redirect.html
 ```
+
+MicrosoftはHTTPのリダイレクトURIを`localhost`だけ許可するため、ローカル確認では`127.0.0.1`ではなく`localhost`を使用します。
 
 取得したApplication (client) IDを`config.js`の`microsoftClientId`へ設定します。認証はAuthorization Code Flow + PKCEを使用します。
 

@@ -1,5 +1,5 @@
-const CACHE = 'kagicho-v4';
-const ASSETS = ['./','./index.html','./styles.css?v=3','./app.js?v=4','./auth.js?v=4','./config.js?v=4','./auth/microsoft-redirect.html','./auth/microsoft-redirect.js','./manifest.webmanifest','./icons/icon.svg'];
+const CACHE = 'kagicho-v5';
+const ASSETS = ['./','./index.html','./styles.css?v=3','./app.js?v=5','./auth.js?v=5','./config.js?v=5','./auth/microsoft-redirect.html','./auth/microsoft-redirect.js','./manifest.webmanifest','./icons/icon.svg'];
 self.addEventListener('install', event => event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ASSETS)).then(() => self.skipWaiting())));
 self.addEventListener('activate', event => event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(key => key !== CACHE).map(key => caches.delete(key)))).then(() => self.clients.claim())));
 self.addEventListener('fetch', event => {
