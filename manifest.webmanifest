@@ -1,0 +1,14 @@
+{
+  "name": "鍵帳 - Personal Password Vault",
+  "short_name": "鍵帳",
+  "description": "ローカル優先の軽量パスワード管理PWA",
+  "lang": "ja",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f6f8f5",
+  "theme_color": "#0f766e",
+  "icons": [
+    {"src":"icons/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}
+  ]
+}

@@ -1,0 +1,5 @@
+# Local OAuth overrides and editor files
+config.local.js
+.DS_Store
+Thumbs.db
+

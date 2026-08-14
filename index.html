@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f766e">
+  <meta name="description" content="ローカル優先の軽量パスワード管理PWA">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css?v=2">
+  <title>鍵帳</title>
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">PRIVATE VAULT</p>
+        <h1>鍵帳</h1>
+      </div>
+      <div class="header-actions">
+        <button id="syncButton" class="icon-button" type="button" title="同期" aria-label="同期">↻</button>
+        <button id="settingsButton" class="icon-button" type="button" title="設定" aria-label="設定">⚙</button>
+      </div>
+    </header>
+
+    <main id="mainView">
+      <section class="search-panel" aria-label="検索">
+        <label class="search-box">
+          <span aria-hidden="true">⌕</span>
+          <input id="searchInput" type="search" inputmode="search" aria-label="ログイン情報を検索" placeholder="サービス名、読み、IDで検索" autocomplete="off" autofocus>
+          <button id="clearSearch" type="button" class="clear-button" aria-label="検索を消去">×</button>
+        </label>
+        <div id="categoryChips" class="chips" aria-label="カテゴリ"></div>
+      </section>
+
+      <section class="list-heading">
+        <div>
+          <h2 id="resultTitle">すべて</h2>
+          <p id="resultCount">0件</p>
+        </div>
+        <span id="syncStatus" class="status status-local">● ローカル</span>
+      </section>
+
+      <section id="emptyState" class="empty-state" hidden>
+        <div class="empty-icon">⌕</div>
+        <h2 id="emptyTitle">まだ登録がありません</h2>
+        <p id="emptyMessage">右下の＋から、最初のログイン情報を登録できます。</p>
+      </section>
+      <section id="credentialList" class="credential-list" aria-live="polite"></section>
+    </main>
+
+    <button id="addButton" class="fab" type="button" aria-label="ログイン情報を追加">＋</button>
+  </div>
+
+  <dialog id="editorDialog" class="sheet-dialog">
+    <form id="editorForm" method="dialog" class="sheet">
+      <div class="sheet-handle"></div>
+      <div class="sheet-header">
+        <div>
+          <p class="eyebrow">VAULT ITEM</p>
+          <h2 id="editorTitle">新規登録</h2>
+        </div>
+        <button class="icon-button" value="cancel" type="submit" aria-label="閉じる">×</button>
+      </div>
+      <input id="recordId" type="hidden">
+      <label>サービス名 <span class="required">必須</span>
+        <input id="serviceName" required autocomplete="organization" placeholder="Amazon">
+      </label>
+      <label>ID <span class="required">必須</span>
+        <input id="userId" required autocomplete="username" placeholder="example@email.com">
+      </label>
+      <label>パスワード <span class="required">必須</span>
+        <span class="input-with-action">
+          <input id="password" required type="password" autocomplete="new-password" placeholder="パスワード">
+          <button id="generatePassword" type="button">生成</button>
+        </span>
+      </label>
+      <details id="advancedFields">
+        <summary>詳細</summary>
+        <div class="details-grid">
+          <label>URL<input id="url" type="url" inputmode="url" autocomplete="url" placeholder="https://example.com"></label>
+          <label>カテゴリ<input id="category" list="categoryOptions" placeholder="その他"><datalist id="categoryOptions"></datalist></label>
+          <label>タグ<input id="tags" placeholder="買い物, 配送"></label>
+          <label>読み<input id="reading" placeholder="アマゾン"></label>
+          <label>メモ<textarea id="memo" rows="3" placeholder="自由メモ"></textarea></label>
+        </div>
+      </details>
+      <div class="sheet-actions">
+        <button id="deleteButton" class="danger ghost" type="button" hidden>削除</button>
+        <span class="spacer"></span>
+        <button class="ghost" value="cancel" type="submit">キャンセル</button>
+        <button id="saveButton" class="primary" value="default" type="submit">保存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="settingsDialog" class="sheet-dialog">
+    <section class="sheet settings-sheet">
+      <div class="sheet-handle"></div>
+      <div class="sheet-header"><div><p class="eyebrow">SETTINGS</p><h2>設定</h2></div><button id="closeSettings" class="icon-button" aria-label="閉じる">×</button></div>
+      <div class="setting-row"><div><strong>自動ロック</strong><small>無操作時にメモリ上の鍵を破棄</small></div><select id="lockTimeout"><option value="5">5分</option><option value="15">15分</option><option value="30">30分</option><option value="60">60分</option><option value="0">無効</option></select></div>
+      <div class="setting-row"><div><strong>暗号化バックアップ</strong><small>端末へ .enc ファイルを保存</small></div><button id="exportButton" class="secondary">書き出す</button></div>
+      <div class="setting-row"><div><strong>バックアップを復元</strong><small>この端末の内容と置き換え</small></div><button id="importButton" class="secondary">読み込む</button><input id="importFile" type="file" accept=".enc,application/octet-stream" hidden></div>
+      <div class="setting-row"><div><strong>OneDrive</strong><small>接続設定後に利用できます</small></div><span class="status status-offline">未接続</span></div>
+      <button id="lockButton" class="danger full-button">今すぐロック</button>
+    </section>
+  </dialog>
+
+  <dialog id="lockDialog" class="lock-dialog">
+    <section class="lock-card">
+      <div class="lock-mark">◆</div><p class="eyebrow">VAULT LOCKED</p><h2>鍵帳はロックされています</h2>
+      <p>端末内の保護鍵を使って再開します。独自のマスターパスワードは不要です。</p>
+      <button id="unlockButton" class="primary full-button">ロック解除</button>
+    </section>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="app.js?v=2" type="module"></script>
+</body>
+</html>
