@@ -1,4 +1,4 @@
-import { APP_CONFIG, microsoftRedirectUri } from './config.js?v=5';
+import { APP_CONFIG, microsoftRedirectUri } from './config.js?v=6';
 
 let googleLibraryPromise;
 let googleInitialized = false;
@@ -39,7 +39,7 @@ function validateGoogleCredential(credential) {
 export const googleConfigured = () => Boolean(APP_CONFIG.googleClientId);
 export const microsoftConfigured = () => Boolean(APP_CONFIG.microsoftClientId);
 
-export async function authenticateGoogle(container, { prompt = true } = {}) {
+export async function authenticateGoogle(container, { prompt = false } = {}) {
   if (!googleConfigured()) throw new Error('Google OAuth client ID is not configured');
   await loadGoogleLibrary();
   return new Promise((resolve, reject) => {
@@ -47,9 +47,9 @@ export async function authenticateGoogle(container, { prompt = true } = {}) {
     if (!googleInitialized) {
       google.accounts.id.initialize({
         client_id: APP_CONFIG.googleClientId,
-        auto_select: true,
+        auto_select: false,
         cancel_on_tap_outside: false,
-        use_fedcm_for_prompt: true,
+        use_fedcm_for_button: false,
         callback: response => {
           try { googlePending?.resolve(validateGoogleCredential(response.credential)); }
           catch (error) { googlePending?.reject(error); }
@@ -62,7 +62,7 @@ export async function authenticateGoogle(container, { prompt = true } = {}) {
       container.replaceChildren();
       google.accounts.id.renderButton(container, { type: 'standard', theme: 'outline', size: 'large', text: 'continue_with', shape: 'pill', width: 300 });
     }
-    if (prompt) google.accounts.id.prompt();
+    if (prompt && !container) google.accounts.id.prompt();
   });
 }
 
