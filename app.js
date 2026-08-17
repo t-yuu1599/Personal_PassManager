@@ -1,4 +1,4 @@
-import { authenticateGoogle, googleConfigured, microsoftConfigured, getMicrosoftAccessToken, clearMicrosoftAccessToken } from './auth.js?v=7';
+import { authenticateGoogle, googleConfigured, microsoftConfigured, getMicrosoftAccessToken, clearMicrosoftAccessToken } from './auth.js?v=8';
 
 const DB_NAME = 'kagicho-vault';
 const DB_VERSION = 1;

@@ -1,5 +1,8 @@
-import { APP_CONFIG, googleRedirectUri, microsoftRedirectUri } from './config.js?v=7';
+import { APP_CONFIG, googleRedirectUri, microsoftRedirectUri } from './config.js?v=8';
 
+let googleLibraryPromise;
+let googleInitialized = false;
+let googlePending;
 let microsoftAccess = null;
 
 const base64Url = bytes => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
@@ -17,6 +20,20 @@ function validateGoogleCredential(credential, expectedNonce = '') {
   const issuerOk = payload.iss === 'https://accounts.google.com' || payload.iss === 'accounts.google.com';
   if (!issuerOk || payload.aud !== APP_CONFIG.googleClientId || Number(payload.exp) * 1000 <= Date.now() || (expectedNonce && payload.nonce !== expectedNonce)) throw new Error('Google credential validation failed');
   return { sub: payload.sub, email: payload.email, name: payload.name || payload.email, picture: payload.picture || '', expiresAt: Number(payload.exp) * 1000 };
+}
+
+function loadGoogleLibrary() {
+  if (globalThis.google?.accounts?.id) return Promise.resolve();
+  if (googleLibraryPromise) return googleLibraryPromise;
+  googleLibraryPromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://accounts.google.com/gsi/client';
+    script.async = true;
+    script.onload = resolve;
+    script.onerror = () => reject(new Error('Google Identity Services could not be loaded'));
+    document.head.append(script);
+  });
+  return googleLibraryPromise;
 }
 
 function consumeGoogleRedirect() {
@@ -55,14 +72,31 @@ export async function authenticateGoogle(container) {
   if (!googleConfigured()) throw new Error('Google OAuth client ID is not configured');
   const returnedUser = consumeGoogleRedirect();
   if (returnedUser) return returnedUser;
-  return new Promise(() => {
+  await loadGoogleLibrary();
+  return new Promise((resolve, reject) => {
     if (!container) throw new Error('Google sign-in container is unavailable');
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'google-redirect-button';
-    button.textContent = 'G  Googleで続ける';
-    button.addEventListener('click', beginGoogleRedirect, { once: true });
-    container.replaceChildren(button);
+    googlePending = { resolve, reject };
+    if (!googleInitialized) {
+      google.accounts.id.initialize({
+        client_id: APP_CONFIG.googleClientId,
+        auto_select: false,
+        use_fedcm_for_button: true,
+        callback: response => {
+          try { googlePending?.resolve(validateGoogleCredential(response.credential)); }
+          catch (error) { googlePending?.reject(error); }
+          finally { googlePending = null; }
+        }
+      });
+      googleInitialized = true;
+    }
+    const officialButton = document.createElement('div');
+    google.accounts.id.renderButton(officialButton, { type: 'standard', theme: 'outline', size: 'large', text: 'continue_with', shape: 'pill', width: 300 });
+    const fallbackButton = document.createElement('button');
+    fallbackButton.type = 'button';
+    fallbackButton.className = 'google-redirect-button';
+    fallbackButton.textContent = '別画面でGoogle認証を試す';
+    fallbackButton.addEventListener('click', beginGoogleRedirect, { once: true });
+    container.replaceChildren(officialButton, fallbackButton);
   });
 }
 
