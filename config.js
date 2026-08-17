@@ -11,3 +11,7 @@ export const APP_CONFIG = Object.freeze({
 export function microsoftRedirectUri() {
   return new URL('./auth/microsoft-redirect.html', document.baseURI).href;
 }
+
+export function googleRedirectUri() {
+  return new URL('./', document.baseURI).href.split('#')[0];
+}

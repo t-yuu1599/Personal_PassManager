@@ -1,4 +1,4 @@
-import { authenticateGoogle, googleConfigured, microsoftConfigured, getMicrosoftAccessToken, clearMicrosoftAccessToken } from './auth.js?v=6';
+import { authenticateGoogle, googleConfigured, microsoftConfigured, getMicrosoftAccessToken, clearMicrosoftAccessToken } from './auth.js?v=7';
 
 const DB_NAME = 'kagicho-vault';
 const DB_VERSION = 1;
@@ -262,13 +262,13 @@ async function connectGoogleAccount(){
   if(!googleConfigured()){showToast('Google Client IDが未設定です');return;}
   const reopenSettings=ui.settingsDialog.open;if(reopenSettings)ui.settingsDialog.close();
   ui.authDialog.showModal();ui.authError.textContent='';
-  try{currentGoogleUser=await authenticateGoogle(ui.googleSignInButton,{prompt:false});ui.authDialog.close();state.settings.google={sub:currentGoogleUser.sub,email:currentGoogleUser.email,name:currentGoogleUser.name};await persistState(true);updateAccountUI();showToast('Googleアカウントを確認しました');if(reopenSettings)ui.settingsDialog.showModal();}
+  try{currentGoogleUser=await authenticateGoogle(ui.googleSignInButton);ui.authDialog.close();state.settings.google={sub:currentGoogleUser.sub,email:currentGoogleUser.email,name:currentGoogleUser.name};await persistState(true);updateAccountUI();showToast('Googleアカウントを確認しました');if(reopenSettings)ui.settingsDialog.showModal();}
   catch(error){console.error('Google authentication failed',error);ui.authError.textContent='Google認証を完了できませんでした。';showToast('Google認証に失敗しました');}
 }
 async function requireGoogleIdentity(){
   if(!googleConfigured())return;
   ui.authDialog.showModal();ui.authError.textContent='';
-  try{currentGoogleUser=await authenticateGoogle(ui.googleSignInButton,{prompt:false});ui.authDialog.close();}
+  try{currentGoogleUser=await authenticateGoogle(ui.googleSignInButton);ui.authDialog.close();}
   catch(error){console.error('Google authentication failed',error);ui.authError.textContent='Google認証を完了できませんでした。';throw error;}
 }
 

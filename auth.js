@@ -1,8 +1,5 @@
-import { APP_CONFIG, microsoftRedirectUri } from './config.js?v=6';
+import { APP_CONFIG, googleRedirectUri, microsoftRedirectUri } from './config.js?v=7';
 
-let googleLibraryPromise;
-let googleInitialized = false;
-let googlePending;
 let microsoftAccess = null;
 
 const base64Url = bytes => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
@@ -15,54 +12,57 @@ function decodeJwtPayload(token) {
   return JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(encoded), char => char.charCodeAt(0))));
 }
 
-function loadGoogleLibrary() {
-  if (globalThis.google?.accounts?.id) return Promise.resolve();
-  if (googleLibraryPromise) return googleLibraryPromise;
-  googleLibraryPromise = new Promise((resolve, reject) => {
-    const script = document.createElement('script');
-    script.src = 'https://accounts.google.com/gsi/client';
-    script.async = true;
-    script.onload = resolve;
-    script.onerror = () => reject(new Error('Google Identity Services could not be loaded'));
-    document.head.append(script);
-  });
-  return googleLibraryPromise;
-}
-
-function validateGoogleCredential(credential) {
+function validateGoogleCredential(credential, expectedNonce = '') {
   const payload = decodeJwtPayload(credential);
   const issuerOk = payload.iss === 'https://accounts.google.com' || payload.iss === 'accounts.google.com';
-  if (!issuerOk || payload.aud !== APP_CONFIG.googleClientId || Number(payload.exp) * 1000 <= Date.now()) throw new Error('Google credential validation failed');
+  if (!issuerOk || payload.aud !== APP_CONFIG.googleClientId || Number(payload.exp) * 1000 <= Date.now() || (expectedNonce && payload.nonce !== expectedNonce)) throw new Error('Google credential validation failed');
   return { sub: payload.sub, email: payload.email, name: payload.name || payload.email, picture: payload.picture || '', expiresAt: Number(payload.exp) * 1000 };
+}
+
+function consumeGoogleRedirect() {
+  if (!location.hash) return null;
+  const result = new URLSearchParams(location.hash.slice(1));
+  if (!result.has('id_token') && !result.has('error')) return null;
+  const saved = JSON.parse(sessionStorage.getItem('kagicho-google-oauth') || '{}');
+  sessionStorage.removeItem('kagicho-google-oauth');
+  history.replaceState(null, '', location.pathname + location.search);
+  if (!saved.state || result.get('state') !== saved.state || Date.now() - saved.createdAt > 300000) throw new Error('Google OAuth state validation failed');
+  if (result.get('error')) throw new Error(result.get('error_description') || result.get('error'));
+  return validateGoogleCredential(result.get('id_token'), saved.nonce);
+}
+
+function beginGoogleRedirect() {
+  const state = randomValue(24);
+  const nonce = randomValue(24);
+  sessionStorage.setItem('kagicho-google-oauth', JSON.stringify({ state, nonce, createdAt: Date.now() }));
+  const params = new URLSearchParams({
+    client_id: APP_CONFIG.googleClientId,
+    redirect_uri: googleRedirectUri(),
+    response_type: 'id_token',
+    response_mode: 'fragment',
+    scope: 'openid email profile',
+    state,
+    nonce,
+    prompt: 'select_account'
+  });
+  location.assign(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
 }
 
 export const googleConfigured = () => Boolean(APP_CONFIG.googleClientId);
 export const microsoftConfigured = () => Boolean(APP_CONFIG.microsoftClientId);
 
-export async function authenticateGoogle(container, { prompt = false } = {}) {
+export async function authenticateGoogle(container) {
   if (!googleConfigured()) throw new Error('Google OAuth client ID is not configured');
-  await loadGoogleLibrary();
-  return new Promise((resolve, reject) => {
-    googlePending = { resolve, reject };
-    if (!googleInitialized) {
-      google.accounts.id.initialize({
-        client_id: APP_CONFIG.googleClientId,
-        auto_select: false,
-        cancel_on_tap_outside: false,
-        use_fedcm_for_button: false,
-        callback: response => {
-          try { googlePending?.resolve(validateGoogleCredential(response.credential)); }
-          catch (error) { googlePending?.reject(error); }
-          finally { googlePending = null; }
-        }
-      });
-      googleInitialized = true;
-    }
-    if (container) {
-      container.replaceChildren();
-      google.accounts.id.renderButton(container, { type: 'standard', theme: 'outline', size: 'large', text: 'continue_with', shape: 'pill', width: 300 });
-    }
-    if (prompt && !container) google.accounts.id.prompt();
+  const returnedUser = consumeGoogleRedirect();
+  if (returnedUser) return returnedUser;
+  return new Promise(() => {
+    if (!container) throw new Error('Google sign-in container is unavailable');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'google-redirect-button';
+    button.textContent = 'G  Googleで続ける';
+    button.addEventListener('click', beginGoogleRedirect, { once: true });
+    container.replaceChildren(button);
   });
 }
 
