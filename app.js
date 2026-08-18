@@ -2,7 +2,7 @@
  * 鍵帳のUI、IndexedDB、Vault暗号化、OneDrive同期。
  * OAuthの開始とトークン更新はauth.jsへ委譲する。
  */
-import { authenticateGoogle, googleConfigured, microsoftConfigured, getMicrosoftAccessToken, clearMicrosoftAccessToken } from './auth.js?v=9';
+import { authenticateGoogle, googleConfigured, microsoftConfigured, getMicrosoftAccessToken, clearMicrosoftAccessToken } from './auth.js?v=10';
 
 const DB_NAME = 'kagicho-vault';
 const DB_VERSION = 1;
