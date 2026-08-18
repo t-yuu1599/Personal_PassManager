@@ -4,7 +4,7 @@
  * MicrosoftはAuthorization Code + PKCE。ポップアップ不通時はlocalStorageでもコールバックを返す。
  * 制限: ID tokenの署名検証は行わない。Vaultの機密性は暗号化と鍵管理が担う。
  */
-import { APP_CONFIG, googleRedirectUri, microsoftRedirectUri } from './config.js?v=10';
+import { APP_CONFIG, googleRedirectUri, microsoftRedirectUri } from './config.js?v=11';
 
 let googleLibraryPromise;
 let googleInitialized = false;

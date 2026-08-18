@@ -2,7 +2,7 @@
  * 鍵帳のUI、IndexedDB、Vault暗号化、OneDrive同期。
  * OAuthの開始とトークン更新はauth.jsへ委譲する。
  */
-import { authenticateGoogle, googleConfigured, microsoftConfigured, getMicrosoftAccessToken, clearMicrosoftAccessToken } from './auth.js?v=10';
+import { authenticateGoogle, googleConfigured, microsoftConfigured, getMicrosoftAccessToken, clearMicrosoftAccessToken } from './auth.js?v=11';
 
 const DB_NAME = 'kagicho-vault';
 const DB_VERSION = 1;
@@ -39,7 +39,7 @@ let currentGoogleUser = null;
 let syncInProgress = false;
 let syncProblem = '';
 
-function freshState(){return {formatVersion:1,revision:0,updatedAt:new Date(0).toISOString(),deviceId:crypto.randomUUID(),records:[],categories:[...DEFAULT_CATEGORIES],settings:{lockMinutes:15,google:null,microsoft:null},dirty:false};}
+function freshState(){return {formatVersion:1,revision:0,updatedAt:new Date(0).toISOString(),deviceId:crypto.randomUUID(),records:[],categories:[...DEFAULT_CATEGORIES],settings:{lockMinutes:15,google:null,microsoft:null,deviceLabel:'',keyExchange:null},dirty:false};}
 function bytesToBase64(bytes){let s=''; for(let i=0;i<bytes.length;i+=0x8000)s+=String.fromCharCode(...bytes.subarray(i,i+0x8000)); return btoa(s);}
 function base64ToBytes(value){const s=atob(value), out=new Uint8Array(s.length); for(let i=0;i<s.length;i++)out[i]=s.charCodeAt(i); return out;}
 function request(req){return new Promise((resolve,reject)=>{req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);});}
@@ -75,9 +75,10 @@ async function decryptState(blob){
 }
 async function loadState(){
   const encrypted=await dbGet('vault');
-  if(!encrypted){state=freshState();await persistState(false);return;}
+  if(!encrypted){state=freshState();ensureSettingsDefaults();await persistState(false);return;}
   const defaults=freshState(),loaded=await decryptState(encrypted);
   state={...defaults,...loaded,settings:{...defaults.settings,...loaded.settings}};
+  ensureSettingsDefaults();
   state.categories=[...new Set([...DEFAULT_CATEGORIES,...(state.categories||[])])];
 }
 async function persistState(markDirty=true){
@@ -90,6 +91,25 @@ async function storeStateWithoutRevision(){
   const snapshot=JSON.parse(JSON.stringify(state));
   saveQueue=saveQueue.then(async()=>dbPut('vault',await encryptState(snapshot)));
   await saveQueue;
+}
+function encodePathSegment(value){return encodeURIComponent(value).replace(/%2F/gi,'_');}
+function detectDeviceLabel(){
+  const ua=navigator.userAgent||'';
+  const browser=/Edg\//.test(ua)?'Edge':/Chrome\//.test(ua)?'Chrome':/Safari\//.test(ua)&&!/Chrome\//.test(ua)?'Safari':/Firefox\//.test(ua)?'Firefox':'Browser';
+  const device=/iPhone|Android.+Mobile/.test(ua)?'スマホ':/iPad|Android/.test(ua)?'タブレット':'PC';
+  return `${browser} (${device})`;
+}
+async function updateLocalStateMetadata(mutator){
+  mutator();
+  await storeStateWithoutRevision();
+}
+function ensureSettingsDefaults(){
+  state.settings=state.settings||{};
+  if(typeof state.settings.lockMinutes!=='number')state.settings.lockMinutes=15;
+  if(!state.settings.deviceLabel)state.settings.deviceLabel=detectDeviceLabel();
+  if(!('google'in state.settings))state.settings.google=null;
+  if(!('microsoft'in state.settings))state.settings.microsoft=null;
+  if(!('keyExchange'in state.settings))state.settings.keyExchange=null;
 }
 
 function normalize(value=''){
@@ -252,6 +272,75 @@ async function ensureAppFolder(token){
   if(!response)throw new Error('OneDrive App Folderを作成できませんでした。個人Microsoftアカウントか確認してください。');
   return response;
 }
+async function graphGetJson(path,token){
+  const response=await graphRequest(path,token);
+  if(!response)return null;
+  return response.json();
+}
+async function graphPutJson(path,token,value){
+  await graphRequest(path,token,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(value)});
+}
+async function listDriveFolderChildren(folderName,token){
+  const list=await graphGetJson(`/me/drive/special/approot:/${encodePathSegment(folderName)}:/children?$select=name`,token);
+  return Array.isArray(list?.value)?list.value:[];
+}
+async function writeWrappedVaultKeyForCurrentDevice(nextVaultKey){
+  const deviceKey=await dbGet('deviceKey');
+  if(!deviceKey)throw new Error('端末鍵の初期化に失敗しました');
+  const wrapped=await crypto.subtle.wrapKey('raw',nextVaultKey,deviceKey,'AES-KW');
+  await dbPut('wrappedVaultKey',wrapped);
+}
+async function createKeyExchangeRequest(token){
+  const existing=state.settings.keyExchange;
+  if(existing?.requestId)return existing;
+  const requestId=`req-${crypto.randomUUID()}`;
+  const pair=await crypto.subtle.generateKey({name:'RSA-OAEP',modulusLength:2048,publicExponent:new Uint8Array([1,0,1]),hash:'SHA-256'},true,['encrypt','decrypt']);
+  const publicKeySpki=bytesToBase64(new Uint8Array(await crypto.subtle.exportKey('spki',pair.publicKey)));
+  const privateKeyPkcs8=bytesToBase64(new Uint8Array(await crypto.subtle.exportKey('pkcs8',pair.privateKey)));
+  const requestPayload={requestId,requesterDeviceId:state.deviceId,requesterLabel:state.settings.deviceLabel||detectDeviceLabel(),requesterPublicKey:publicKeySpki,requestedAt:new Date().toISOString(),status:'pending'};
+  await graphPutJson(`/me/drive/special/approot:/key-requests/${encodePathSegment(`${requestId}.json`)}:/content`,token,requestPayload);
+  await updateLocalStateMetadata(()=>{state.settings.keyExchange={requestId,privateKeyPkcs8,requestedAt:requestPayload.requestedAt};});
+  return state.settings.keyExchange;
+}
+async function tryConsumeKeyExchangeGrant(token,remote){
+  const exchange=state.settings.keyExchange;
+  if(!exchange?.requestId||!exchange.privateKeyPkcs8)return false;
+  const grant=await graphGetJson(`/me/drive/special/approot:/key-grants/${encodePathSegment(`${exchange.requestId}.json`)}:/content`,token);
+  if(!grant?.encryptedVaultKey)return false;
+  const privateKey=await crypto.subtle.importKey('pkcs8',base64ToBytes(exchange.privateKeyPkcs8),{name:'RSA-OAEP',hash:'SHA-256'},false,['decrypt']);
+  const rawKey=await crypto.subtle.decrypt({name:'RSA-OAEP'},privateKey,base64ToBytes(grant.encryptedVaultKey));
+  const nextVaultKey=await crypto.subtle.importKey('raw',rawKey,{name:'AES-GCM',length:256},true,['encrypt','decrypt']);
+  vaultKey=nextVaultKey;
+  await writeWrappedVaultKeyForCurrentDevice(nextVaultKey);
+  await updateLocalStateMetadata(()=>{state.settings.keyExchange=null;});
+  if(remote)await applyCloudVault(remote);
+  return true;
+}
+async function approveKeyExchangeRequest(requestFileName,token){
+  const requestData=await graphGetJson(`/me/drive/special/approot:/key-requests/${encodePathSegment(requestFileName)}:/content`,token);
+  if(!requestData?.requestId||!requestData?.requesterPublicKey||requestData.requesterDeviceId===state.deviceId)return false;
+  const grantExists=await graphGetJson(`/me/drive/special/approot:/key-grants/${encodePathSegment(`${requestData.requestId}.json`)}:/content`,token);
+  if(grantExists)return false;
+  const requesterLabel=requestData.requesterLabel||'不明な端末';
+  const approve=confirm(`鍵の共有リクエスト\n\n端末: ${requesterLabel}\n要求時刻: ${requestData.requestedAt||'不明'}\n\nこの端末のVault鍵を共有しますか？`);
+  if(!approve)return false;
+  const requesterPublicKey=await crypto.subtle.importKey('spki',base64ToBytes(requestData.requesterPublicKey),{name:'RSA-OAEP',hash:'SHA-256'},false,['encrypt']);
+  const rawVaultKey=await crypto.subtle.exportKey('raw',vaultKey);
+  const encryptedVaultKey=await crypto.subtle.encrypt({name:'RSA-OAEP'},requesterPublicKey,rawVaultKey);
+  const grantPayload={requestId:requestData.requestId,encryptedVaultKey:bytesToBase64(new Uint8Array(encryptedVaultKey)),grantedByDeviceId:state.deviceId,grantedByLabel:state.settings.deviceLabel||detectDeviceLabel(),grantedAt:new Date().toISOString()};
+  await graphPutJson(`/me/drive/special/approot:/key-grants/${encodePathSegment(`${requestData.requestId}.json`)}:/content`,token,grantPayload);
+  return true;
+}
+async function processPendingKeyExchangeRequests(token,interactive){
+  if(!interactive)return 0;
+  const files=await listDriveFolderChildren('key-requests',token);
+  let approvedCount=0;
+  for(const item of files){
+    if(!item?.name?.endsWith('.json'))continue;
+    if(await approveKeyExchangeRequest(item.name,token))approvedCount+=1;
+  }
+  return approvedCount;
+}
 async function readCloudVault(token){
   const response=await graphRequest('/me/drive/special/approot:/vault.enc:/content',token);
   if(!response)return null;
@@ -261,7 +350,13 @@ async function readCloudVault(token){
 }
 async function applyCloudVault(remote){
   const localMicrosoft=state.settings.microsoft;
-  const restored=await decryptState(remote.encryptedPayload);
+  let restored;
+  try{
+    restored=await decryptState(remote.encryptedPayload);
+  }catch(error){
+    console.error('Cloud vault decryption failed',error);
+    throw new Error('クラウドのVaultをこの端末の鍵で復号できません。既存端末でこの端末への鍵共有を承認してください。');
+  }
   const defaults=freshState();
   state={...defaults,...restored,revision:Number(remote.revision)||restored.revision||0,updatedAt:remote.updatedAt||restored.updatedAt,dirty:false,settings:{...defaults.settings,...restored.settings,microsoft:localMicrosoft||restored.settings?.microsoft||null}};
   state.categories=[...new Set([...DEFAULT_CATEGORIES,...(state.categories||[])])];
@@ -288,6 +383,11 @@ async function syncOneDrive({interactive=false}={}){
     await ensureAppFolder(session.accessToken);
     const remote=await readCloudVault(session.accessToken);
     state.settings.microsoft={account:'OneDrive App Folder',refreshToken:session.refreshToken||'',connectedAt:new Date().toISOString()};
+    const exchangeResolved=await tryConsumeKeyExchangeGrant(session.accessToken,remote);
+    if(exchangeResolved){
+      syncProblem='';showAccountError('');showToast('既存端末の承認で鍵を受け取りました。同期を再開しました。');
+      return;
+    }
     if(remote&&Number(remote.revision)>Number(state.revision)){
       if(state.dirty){
         const useCloud=confirm('別の端末に新しい変更があります。\n\nOK: クラウド版を使用\nキャンセル: この端末版を使用');
@@ -295,12 +395,25 @@ async function syncOneDrive({interactive=false}={}){
       }else await applyCloudVault(remote);
     }else if(!remote||state.dirty||Number(remote.revision)<Number(state.revision))await uploadCloudVault(session.accessToken);
     else{state.dirty=false;await storeStateWithoutRevision();}
-    syncProblem='';showAccountError('');showToast('OneDriveと同期しました');
+    const approvedCount=await processPendingKeyExchangeRequests(session.accessToken,interactive);
+    syncProblem='';showAccountError('');
+    showToast(approvedCount>0?`OneDriveと同期しました（鍵要求 ${approvedCount}件を承認）`:'OneDriveと同期しました');
   }catch(error){
     state.settings.microsoft=previousMicrosoft;
     console.error('OneDrive sync failed',error);
-    const message=oneDriveErrorMessage(error);
-    if(isMicrosoftAuthError(error))syncProblem=previousMicrosoft?'再接続が必要':'未接続';
+    let message=oneDriveErrorMessage(error);
+    if(interactive&&/復号できません/.test(String(error?.message||''))){
+      try{
+        const session=await getOneDriveSession(true);
+        await ensureAppFolder(session.accessToken);
+        const exchange=await createKeyExchangeRequest(session.accessToken);
+        message=`この端末ではクラウドVaultを復号できません。既存端末で同期を開き、鍵共有リクエスト（${exchange.requestId}）を承認してください。`;
+      }catch(requestError){
+        console.error('Key exchange request failed',requestError);
+      }
+    }
+    if(/復号できません/.test(String(error?.message||'')))syncProblem='承認待ち';
+    else if(isMicrosoftAuthError(error))syncProblem=previousMicrosoft?'再接続が必要':'未接続';
     else syncProblem=previousMicrosoft?'同期失敗':'未接続';
     showAccountError(message);
     if(interactive)showToast(message);
@@ -338,6 +451,7 @@ function bindEvents(){
 async function start(){
   bindEvents();try{
     await openDatabase();await requireGoogleIdentity();await initializeKeys();await loadState();
+    if(!state.settings.deviceLabel)await updateLocalStateMetadata(()=>{state.settings.deviceLabel=detectDeviceLabel();});
     if(currentGoogleUser&&state.settings.google&&state.settings.google.sub!==currentGoogleUser.sub)throw new Error('登録済みとは異なるGoogleアカウントです');
     if(currentGoogleUser&&!state.settings.google){state.settings.google={sub:currentGoogleUser.sub,email:currentGoogleUser.email,name:currentGoogleUser.name};await persistState(true);}
     ui.lockTimeout.value=String(state.settings.lockMinutes??15);render();resetLockTimer();
