@@ -1,4 +1,8 @@
-import { authenticateGoogle, googleConfigured, microsoftConfigured, getMicrosoftAccessToken, clearMicrosoftAccessToken } from './auth.js?v=8';
+/**
+ * 鍵帳のUI、IndexedDB、Vault暗号化、OneDrive同期。
+ * OAuthの開始とトークン更新はauth.jsへ委譲する。
+ */
+import { authenticateGoogle, googleConfigured, microsoftConfigured, getMicrosoftAccessToken, clearMicrosoftAccessToken } from './auth.js?v=9';
 
 const DB_NAME = 'kagicho-vault';
 const DB_VERSION = 1;
@@ -22,7 +26,7 @@ const SERVICE_RULES = [
 ];
 
 const $ = id => document.getElementById(id);
-const ui = Object.fromEntries(['searchInput','clearSearch','categoryChips','resultTitle','resultCount','credentialList','emptyState','emptyTitle','emptyMessage','addButton','editorDialog','editorForm','editorTitle','recordId','serviceName','userId','password','generatePassword','url','category','tags','reading','memo','advancedFields','deleteButton','settingsButton','settingsDialog','closeSettings','lockTimeout','exportButton','importButton','importFile','lockButton','lockDialog','unlockButton','toast','syncButton','syncStatus','categoryOptions','googleAccountText','googleConnectButton','oneDriveAccountText','oneDriveConnectButton','authDialog','googleSignInButton','authError'].map(id => [id,$(id)]));
+const ui = Object.fromEntries(['searchInput','clearSearch','categoryChips','resultTitle','resultCount','credentialList','emptyState','emptyTitle','emptyMessage','addButton','editorDialog','editorForm','editorTitle','recordId','serviceName','userId','password','generatePassword','url','category','tags','reading','memo','advancedFields','deleteButton','settingsButton','settingsDialog','closeSettings','lockTimeout','exportButton','importButton','importFile','lockButton','lockDialog','unlockButton','toast','syncButton','syncStatus','categoryOptions','googleAccountText','googleConnectButton','oneDriveAccountText','oneDriveConnectButton','accountError','authDialog','googleSignInButton','authError'].map(id => [id,$(id)]));
 
 let db;
 let vaultKey = null;
@@ -178,7 +182,29 @@ function updateSyncStatus(){
   if(state.settings.microsoft){ui.syncStatus.className=`status ${state.dirty?'status-offline':'status-local'}`;ui.syncStatus.textContent=state.dirty?'● 未同期':'✓ 同期済み';return;}
   ui.syncStatus.className=`status ${state.dirty?'status-offline':'status-local'}`;ui.syncStatus.textContent=state.dirty?'● ローカル変更あり':'✓ ローカル保存済み';
 }
-function showToast(message){ui.toast.textContent=message;ui.toast.classList.add('show');clearTimeout(showToast.timer);showToast.timer=setTimeout(()=>ui.toast.classList.remove('show'),1800);}
+function showToast(message){
+  ui.toast.textContent=message;
+  const openDialog=document.querySelector('dialog[open]');
+  (openDialog||document.body).append(ui.toast);
+  ui.toast.classList.add('show');
+  clearTimeout(showToast.timer);
+  showToast.timer=setTimeout(()=>ui.toast.classList.remove('show'),2800);
+}
+function showAccountError(message=''){if(ui.accountError)ui.accountError.textContent=message||'';}
+function oneDriveErrorMessage(error){
+  const message=error?.message||'OneDrive同期に失敗しました';
+  if(/popup was blocked/i.test(message))return 'ポップアップがブロックされました。アドレスバー右端のアイコンから許可してください。';
+  if(/timed out/i.test(message))return 'Microsoft認証が時間切れになりました。もう一度再接続してください。';
+  if(/session expired/i.test(message))return 'OneDriveの接続期限が切れました。再接続してください。';
+  if(/App Folder|accessDenied|個人Microsoft|職場|学校/i.test(message))return message;
+  if(/Graph error 5/i.test(message))return 'OneDriveサーバーに一時的な問題があります。しばらく待ってからやり直してください。';
+  return message;
+}
+function isMicrosoftAuthError(error){
+  const msg=String(error?.message||'');
+  if(/App Folder|accessDenied|個人Microsoft|職場|学校|403/i.test(msg))return false;
+  return /expired|sign-in|popup|OAuth|token|AADSTS|未接続|Client ID|blocked|timed out|invalid_grant|認証が無効/i.test(msg);
+}
 
 function resetLockTimer(){
   clearTimeout(lockTimer);if(!vaultKey)return;const minutes=Number(state.settings.lockMinutes);if(minutes>0)lockTimer=setTimeout(lockVault,minutes*60*1000);
@@ -200,20 +226,31 @@ async function importBackup(file){
 
 async function graphRequest(path,token,options={}){
   const response=await fetch(`https://graph.microsoft.com/v1.0${path}`,{...options,headers:{Authorization:`Bearer ${token}`,...options.headers}});
+  if(response.ok)return response;
+  let body=null;
+  try{body=await response.json();}catch{}
+  const code=body?.error?.code||'';
+  const detail=body?.error?.message||'';
+  const requestId=body?.error?.innerError?.['request-id']||'';
+  console.error(`Graph API ${response.status}`,{path,code,detail,requestId});
   if(response.status===404)return null;
-  if(!response.ok){let detail='';try{detail=(await response.json()).error?.message||'';}catch{}throw new Error(detail||`Microsoft Graph error ${response.status}`);}
-  return response;
+  if(response.status===403){
+    if(code==='accessDenied')throw new Error('OneDrive App Folderにアクセスできません。個人Microsoftアカウント(Outlook.com等)でログインしているか確認してください。職場・学校アカウントではApp Folderは利用できません。');
+    throw new Error(detail||'OneDriveへのアクセスが拒否されました (403)');
+  }
+  if(response.status===401)throw new Error('OneDriveの認証が無効です。再接続してください。');
+  throw new Error(detail||`Microsoft Graph error ${response.status}`);
 }
 async function getOneDriveSession(interactive=false){
   if(!microsoftConfigured())throw new Error('Microsoft Client IDが未設定です');
   const refreshToken=state.settings.microsoft?.refreshToken||'';
   if(!interactive&&!refreshToken)throw new Error('OneDriveは未接続です');
-  const session=await getMicrosoftAccessToken(refreshToken);
-  if(!state.settings.microsoft||session.refreshToken!==refreshToken){
-    state.settings.microsoft={account:'OneDrive App Folder',refreshToken:session.refreshToken,connectedAt:new Date().toISOString()};
-    await persistState(true);
-  }
-  return session;
+  return getMicrosoftAccessToken(refreshToken,{interactive,forceLogin:interactive&&Boolean(state.settings.microsoft)});
+}
+async function ensureAppFolder(token){
+  const response=await graphRequest('/me/drive/special/approot',token);
+  if(!response)throw new Error('OneDrive App Folderを作成できませんでした。個人Microsoftアカウントか確認してください。');
+  return response;
 }
 async function readCloudVault(token){
   const response=await graphRequest('/me/drive/special/approot:/vault.enc:/content',token);
@@ -239,12 +276,18 @@ async function uploadCloudVault(token){
   state.dirty=false;await storeStateWithoutRevision();
 }
 async function syncOneDrive({interactive=false}={}){
-  if(syncInProgress)return;
-  if(!navigator.onLine){syncProblem='オフライン';updateSyncStatus();if(interactive)showToast('オフラインでは同期できません');return;}
-  syncInProgress=true;syncProblem='';updateSyncStatus();
+  if(syncInProgress){
+    if(interactive){const message='同期の処理中です。完了するまで待ってください。';showAccountError(message);showToast(message);}
+    return;
+  }
+  if(!navigator.onLine){syncProblem='オフライン';updateSyncStatus();const message='オフラインでは同期できません';if(interactive){showAccountError(message);showToast(message);}return;}
+  syncInProgress=true;syncProblem='';showAccountError('');updateSyncStatus();
+  const previousMicrosoft=state.settings.microsoft;
   try{
     const session=await getOneDriveSession(interactive);
+    await ensureAppFolder(session.accessToken);
     const remote=await readCloudVault(session.accessToken);
+    state.settings.microsoft={account:'OneDrive App Folder',refreshToken:session.refreshToken||'',connectedAt:new Date().toISOString()};
     if(remote&&Number(remote.revision)>Number(state.revision)){
       if(state.dirty){
         const useCloud=confirm('別の端末に新しい変更があります。\n\nOK: クラウド版を使用\nキャンセル: この端末版を使用');
@@ -252,10 +295,15 @@ async function syncOneDrive({interactive=false}={}){
       }else await applyCloudVault(remote);
     }else if(!remote||state.dirty||Number(remote.revision)<Number(state.revision))await uploadCloudVault(session.accessToken);
     else{state.dirty=false;await storeStateWithoutRevision();}
-    syncProblem='';showToast('OneDriveと同期しました');
+    syncProblem='';showAccountError('');showToast('OneDriveと同期しました');
   }catch(error){
-    console.error('OneDrive sync failed',error);syncProblem=state.settings.microsoft?'再接続が必要':'未接続';
-    if(interactive)showToast(error.message||'OneDrive同期に失敗しました');
+    state.settings.microsoft=previousMicrosoft;
+    console.error('OneDrive sync failed',error);
+    const message=oneDriveErrorMessage(error);
+    if(isMicrosoftAuthError(error))syncProblem=previousMicrosoft?'再接続が必要':'未接続';
+    else syncProblem=previousMicrosoft?'同期失敗':'未接続';
+    showAccountError(message);
+    if(interactive)showToast(message);
   }finally{syncInProgress=false;updateAccountUI();updateSyncStatus();}
 }
 async function connectGoogleAccount(){

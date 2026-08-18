@@ -1,4 +1,5 @@
 <!doctype html>
+<!-- 鍵帳PWA本体。キャッシュ版はapp.js?v=9 / kagicho-v9。 -->
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
@@ -6,11 +7,11 @@
   <meta name="theme-color" content="#0f766e">
   <meta name="referrer" content="no-referrer">
   <meta name="robots" content="noindex,nofollow,noarchive">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://accounts.google.com/gsi/client; connect-src 'self' https://accounts.google.com/gsi/ https://login.microsoftonline.com https://graph.microsoft.com; frame-src https://accounts.google.com/gsi/ https://login.microsoftonline.com; img-src 'self' data: https://lh3.googleusercontent.com; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://accounts.google.com/gsi/client; connect-src 'self' https://accounts.google.com https://accounts.google.com/gsi/ https://accounts.google.com/o/fedcm/ https://www.google.com/.well-known/web-identity https://google.com/.well-known/web-identity https://login.microsoftonline.com https://graph.microsoft.com; frame-src https://accounts.google.com https://accounts.google.com/gsi/ https://login.microsoftonline.com; img-src 'self' data: https://lh3.googleusercontent.com; style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/; object-src 'none'; base-uri 'self'; form-action 'none'">
   <meta name="description" content="ローカル優先の軽量パスワード管理PWA">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="styles.css?v=3">
+  <link rel="stylesheet" href="styles.css?v=4">
   <title>鍵帳</title>
 </head>
 <body>
@@ -106,6 +107,7 @@
       <div class="setting-row"><div><strong>バックアップを復元</strong><small>この端末の内容と置き換え</small></div><button id="importButton" class="secondary">読み込む</button><input id="importFile" type="file" accept=".enc,application/octet-stream" hidden></div>
       <div class="setting-row"><div><strong>Googleアカウント</strong><small id="googleAccountText">OAuth設定後に利用できます</small></div><button id="googleConnectButton" class="secondary">接続</button></div>
       <div class="setting-row"><div><strong>OneDrive</strong><small id="oneDriveAccountText">OAuth設定後に利用できます</small></div><button id="oneDriveConnectButton" class="secondary">接続</button></div>
+      <p id="accountError" class="error-text"></p>
       <button id="lockButton" class="danger full-button">今すぐロック</button>
     </section>
   </dialog>
@@ -128,6 +130,6 @@
   </dialog>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script src="app.js?v=8" type="module"></script>
+  <script src="app.js?v=9" type="module"></script>
 </body>
 </html>

@@ -1,4 +1,10 @@
-import { APP_CONFIG, googleRedirectUri, microsoftRedirectUri } from './config.js?v=8';
+/**
+ * 鍵帳のGoogle / Microsoft OAuth処理。
+ * GoogleはIdentity Services公式ボタンと、同一タブのOIDCリダイレクトを併用する。
+ * MicrosoftはAuthorization Code + PKCE。ポップアップ不通時はlocalStorageでもコールバックを返す。
+ * 制限: ID tokenの署名検証は行わない。Vaultの機密性は暗号化と鍵管理が担う。
+ */
+import { APP_CONFIG, googleRedirectUri, microsoftRedirectUri } from './config.js?v=9';
 
 let googleLibraryPromise;
 let googleInitialized = false;
@@ -65,38 +71,69 @@ function beginGoogleRedirect() {
   location.assign(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
 }
 
+/**
+ * Google公式ボタン失敗時に使う、同一タブのリダイレクト認証ボタンを作る。
+ * @returns {HTMLButtonElement}
+ */
+function createGoogleRedirectButton() {
+  const fallbackButton = document.createElement('button');
+  fallbackButton.type = 'button';
+  fallbackButton.className = 'google-redirect-button';
+  fallbackButton.textContent = '別画面でGoogle認証を試す';
+  fallbackButton.addEventListener('click', beginGoogleRedirect, { once: true });
+  return fallbackButton;
+}
+
+function showGoogleButtonHint(message) {
+  const authError = document.getElementById('authError');
+  if (authError) authError.textContent = message;
+}
+
 export const googleConfigured = () => Boolean(APP_CONFIG.googleClientId);
 export const microsoftConfigured = () => Boolean(APP_CONFIG.microsoftClientId);
 
+/**
+ * Google本人確認を開始する。リダイレクト復帰を優先し、失敗時は同一タブ認証へ倒す。
+ * @param {HTMLElement} container ボタンを描画する要素
+ * @returns {Promise<{sub:string,email:string,name:string,picture:string,expiresAt:number}>}
+ */
 export async function authenticateGoogle(container) {
   if (!googleConfigured()) throw new Error('Google OAuth client ID is not configured');
   const returnedUser = consumeGoogleRedirect();
   if (returnedUser) return returnedUser;
-  await loadGoogleLibrary();
+  if (!container) throw new Error('Google sign-in container is unavailable');
+  if (googlePending) {
+    googlePending.reject(new Error('Google sign-in was replaced'));
+    googlePending = null;
+  }
+  try {
+    await loadGoogleLibrary();
+  } catch (error) {
+    return new Promise((resolve, reject) => {
+      googlePending = { resolve, reject };
+      showGoogleButtonHint('Google公式ボタンを読み込めませんでした。別画面で認証してください。');
+      container.replaceChildren(createGoogleRedirectButton());
+    });
+  }
   return new Promise((resolve, reject) => {
-    if (!container) throw new Error('Google sign-in container is unavailable');
     googlePending = { resolve, reject };
-    if (!googleInitialized) {
-      google.accounts.id.initialize({
-        client_id: APP_CONFIG.googleClientId,
-        auto_select: false,
-        use_fedcm_for_button: true,
-        callback: response => {
-          try { googlePending?.resolve(validateGoogleCredential(response.credential)); }
-          catch (error) { googlePending?.reject(error); }
-          finally { googlePending = null; }
-        }
-      });
-      googleInitialized = true;
-    }
+    google.accounts.id.initialize({
+      client_id: APP_CONFIG.googleClientId,
+      auto_select: false,
+      use_fedcm_for_button: true,
+      callback: response => {
+        try { googlePending?.resolve(validateGoogleCredential(response.credential)); }
+        catch (error) { googlePending?.reject(error); }
+        finally { googlePending = null; }
+      },
+      error_callback: () => {
+        showGoogleButtonHint('Google公式ボタンを利用できませんでした。別画面で認証してください。');
+      }
+    });
+    googleInitialized = true;
     const officialButton = document.createElement('div');
     google.accounts.id.renderButton(officialButton, { type: 'standard', theme: 'outline', size: 'large', text: 'continue_with', shape: 'pill', width: 300 });
-    const fallbackButton = document.createElement('button');
-    fallbackButton.type = 'button';
-    fallbackButton.className = 'google-redirect-button';
-    fallbackButton.textContent = '別画面でGoogle認証を試す';
-    fallbackButton.addEventListener('click', beginGoogleRedirect, { once: true });
-    container.replaceChildren(officialButton, fallbackButton);
+    container.replaceChildren(officialButton, createGoogleRedirectButton());
   });
 }
 
@@ -115,6 +152,10 @@ async function exchangeMicrosoftCode(code, verifier) {
   return result;
 }
 
+/**
+ * Microsoftログイン画面を開き、Authorization Codeをアクセストークンへ交換する。
+ * @returns {Promise<object>} token endpointのJSON
+ */
 export async function authorizeMicrosoft() {
   if (!microsoftConfigured()) throw new Error('Microsoft OAuth client ID is not configured');
   const { verifier, challenge } = await createPkce();
@@ -125,36 +166,79 @@ export async function authorizeMicrosoft() {
   if (!popup) throw new Error('Microsoft sign-in popup was blocked');
   return new Promise((resolve, reject) => {
     let receive;
+    let onStorage;
+    let poll;
+    let done = false;
+    let consuming = false;
     const timeout = setTimeout(() => finish(new Error('Microsoft sign-in timed out')), 180000);
     const finish = (error, value) => {
-      clearTimeout(timeout); window.removeEventListener('message', receive); sessionStorage.removeItem('kagicho-ms-oauth');
+      if (done) return;
+      done = true;
+      clearTimeout(timeout);
+      clearInterval(poll);
+      window.removeEventListener('message', receive);
+      window.removeEventListener('storage', onStorage);
+      sessionStorage.removeItem('kagicho-ms-oauth');
+      try { localStorage.removeItem('kagicho-ms-oauth-result'); } catch {}
       try { popup.close(); } catch {}
       error ? reject(error) : resolve(value);
     };
-    receive = async event => {
-      if (event.origin !== location.origin || event.data?.type !== 'kagicho-ms-oauth') return;
+    const consume = async data => {
+      if (done || consuming || data?.type !== 'kagicho-ms-oauth') return;
       const saved = JSON.parse(sessionStorage.getItem('kagicho-ms-oauth') || '{}');
-      const callback = new URLSearchParams(event.data.search);
+      const callback = new URLSearchParams(data.search);
       if (callback.get('state') !== saved.state || Date.now() - saved.createdAt > 180000) return finish(new Error('Microsoft OAuth state validation failed'));
+      consuming = true;
       if (callback.get('error')) return finish(new Error(callback.get('error_description') || callback.get('error')));
       try { finish(null, await exchangeMicrosoftCode(callback.get('code'), saved.verifier)); } catch (error) { finish(error); }
     };
+    receive = event => {
+      if (event.origin !== location.origin) return;
+      consume(event.data);
+    };
+    onStorage = event => {
+      if (event.key !== 'kagicho-ms-oauth-result' || !event.newValue) return;
+      try { consume(JSON.parse(event.newValue)); } catch {}
+    };
+    poll = setInterval(() => {
+      try {
+        const raw = localStorage.getItem('kagicho-ms-oauth-result');
+        if (!raw) return;
+        localStorage.removeItem('kagicho-ms-oauth-result');
+        consume(JSON.parse(raw));
+      } catch {}
+    }, 400);
     window.addEventListener('message', receive);
+    window.addEventListener('storage', onStorage);
   });
 }
 
-export async function getMicrosoftAccessToken(refreshToken) {
-  if (microsoftAccess && microsoftAccess.expiresAt > Date.now()) return { accessToken: microsoftAccess.token, refreshToken };
-  if (!refreshToken) {
-    const result = await authorizeMicrosoft();
-    return { accessToken: result.access_token, refreshToken: result.refresh_token || '' };
+/**
+ * Microsoft Graph用アクセストークンを返す。再接続時は必ずログイン画面を出す。
+ * @param {string} refreshToken 保存済みrefresh token
+ * @param {{interactive?:boolean,forceLogin?:boolean}} [options]
+ * @returns {Promise<{accessToken:string,refreshToken:string}>}
+ */
+export async function getMicrosoftAccessToken(refreshToken, options = {}) {
+  const interactive = Boolean(options.interactive);
+  const forceLogin = Boolean(options.forceLogin);
+  if (forceLogin) clearMicrosoftAccessToken();
+  else if (microsoftAccess && microsoftAccess.expiresAt > Date.now()) return { accessToken: microsoftAccess.token, refreshToken };
+  if (!forceLogin && refreshToken) {
+    const body = new URLSearchParams({ client_id: APP_CONFIG.microsoftClientId, grant_type: 'refresh_token', refresh_token: refreshToken, redirect_uri: microsoftRedirectUri(), scope: APP_CONFIG.microsoftScopes.join(' ') });
+    const response = await fetch(`https://login.microsoftonline.com/${APP_CONFIG.microsoftTenant}/oauth2/v2.0/token`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
+    const result = await response.json();
+    if (response.ok) {
+      microsoftAccess = { token: result.access_token, expiresAt: Date.now() + Number(result.expires_in || 3600) * 1000 - 60000 };
+      return { accessToken: result.access_token, refreshToken: result.refresh_token || refreshToken };
+    }
+    clearMicrosoftAccessToken();
+    if (!interactive) throw new Error(result.error_description || 'Microsoft session expired');
+  } else if (!interactive) {
+    throw new Error(refreshToken ? 'Microsoft session expired' : 'OneDriveは未接続です');
   }
-  const body = new URLSearchParams({ client_id: APP_CONFIG.microsoftClientId, grant_type: 'refresh_token', refresh_token: refreshToken, redirect_uri: microsoftRedirectUri(), scope: APP_CONFIG.microsoftScopes.join(' ') });
-  const response = await fetch(`https://login.microsoftonline.com/${APP_CONFIG.microsoftTenant}/oauth2/v2.0/token`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
-  const result = await response.json();
-  if (!response.ok) throw new Error(result.error_description || 'Microsoft session expired');
-  microsoftAccess = { token: result.access_token, expiresAt: Date.now() + Number(result.expires_in || 3600) * 1000 - 60000 };
-  return { accessToken: result.access_token, refreshToken: result.refresh_token || refreshToken };
+  const result = await authorizeMicrosoft();
+  return { accessToken: result.access_token, refreshToken: result.refresh_token || '' };
 }
 
 export function clearMicrosoftAccessToken() { microsoftAccess = null; }
