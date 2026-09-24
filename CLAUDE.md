@@ -1,4 +1,4 @@
-﻿<!-- BEGIN SHARED PROJECT STATE RULES -->
+<!-- BEGIN SHARED PROJECT STATE RULES -->
 
 <!-- AUTO-GENERATED FILE -->
 <!-- Source: agent-rules/source/project-state.md -->
@@ -48,62 +48,9 @@ AI エージェントが変わっても、説明なしで作業を再開でき�
 
 <!-- END SHARED PROJECT STATE RULES -->
 
-<!-- BEGIN SHARED CONTINUITY RULES -->
+<!-- BEGIN AGENT-RULES-TOOLS SHARED RULES -->
+<!-- 自動生成。編集は agent-rules-tools の rules/common.md で行い、distribute.bat で配る -->
 
-<!-- AUTO-GENERATED FILE -->
-<!-- Source: agent-rules/source/agent-log.md -->
-<!-- Do not edit directly. -->
+@AGENTS.md
 
-# Agent Log 運用ルール
-
-共通 AI エージェント向けの作業ログ運用ルール。正本は `agent-rules/source/agent-log.md`。
-
-## 作業開始時
-
-- プロジェクトルートの `.agent-log/` が存在する場合、最近のログを確認する
-- `.ai/PROJECT_STATE.yaml` を読む。無ければ、作業の現在地が未記録だと扱う
-- `.agent-log/` の最近のログを読む
-- 継続ルールは本ファイル（配布された入口）に書いてある。クラウドでもローカルでも、リポジトリ内のこのファイルを読む
-- 過去の設計判断・変更理由を尊重する
-- AI エージェントが変わっても `.agent-log` を引き継ぐ
-
-## 作業終了時（実変更がある場合）
-
-- `.agent-log/` が無ければ作成する
-- ログファイル名: `YYYYMMDD-HHMM-<agent>.md`
-- 以下を必ず記録する
-  - Agent
-  - Date
-  - Task
-  - Reason（なぜその変更を行ったか）
-  - Changes
-  - Files Changed
-  - Verification
-  - Remaining Issues
-- 「何を変更したか」だけでなく「なぜ変更したか」を必ず書く
-- 未検証事項・残課題を明記する
-- `.ai/PROJECT_STATE.yaml` と、今回書いた `.agent-log/` を更新する
-- 公開はフックが自動で行う（Cursor の stop / sessionEnd、Claude の Stop）。本線と作業ブランチの両方へ上がる
-- フックが動かない環境（クラウド等）だけ、次を実行して完了とする
-
-実行するフォルダ: リポジトリのルート
-シェル: PowerShell
-
-    powershell -NoProfile -ExecutionPolicy Bypass -File .ai/publish-handoff.ps1
-
-## 禁止・注意
-
-- 調査・質問回答・コード変更を伴わない作業ではログ不要
-- 不要なブランチ作成を避ける
-- 既存履歴の破壊（force push / hard reset 等）を避ける
-- 通常の個人開発では main への直接変更を許可する
-- ブランチを作った場合、特別な理由がなければ作業終了時に main へ反映する
-- 未マージ状態を作業完了として扱わない
-
-## 正本について
-
-- ルール変更時は原則 `agent-rules/source/agent-log.md` のみを編集する
-- 各プロジェクトへ配布された生成ファイルを直接編集しない
-
-<!-- END SHARED CONTINUITY RULES -->
-
+<!-- END AGENT-RULES-TOOLS SHARED RULES -->

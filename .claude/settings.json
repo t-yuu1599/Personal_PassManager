@@ -1,4 +1,4 @@
-﻿{
+{
     "hooks":  {
                   "SessionStart":  [
                                        {
@@ -16,14 +16,6 @@
                                                  {
                                                      "prompt":  "[shared-project-state-handoff]\r\nIf this session made real project changes (code, config, schema, or docs) and .ai/PROJECT_STATE.yaml is missing an up-to-date current/next/done/risks/unverified/work_context, update that YAML now (keep it short). Write .agent-log only when required by agent-log rules. Do not change or delete locked_decisions unless the user explicitly asked. If no real changes were made, do nothing.",
                                                      "type":  "prompt"
-                                                 }
-                                             ]
-                               },
-                               {
-                                   "hooks":  [
-                                                 {
-                                                     "type":  "command",
-                                                     "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File .ai/publish-handoff.ps1"
                                                  }
                                              ]
                                }
